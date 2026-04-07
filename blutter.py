@@ -1,563 +1,472 @@
-#!/usr/bin/env python3
-
-from __future__ import annotations
-
+#!/usr/bin/python3
 import argparse
-import atexit
 import glob
-import hashlib
-import json
 import mmap
 import os
 import platform
-import re
 import shutil
-import signal
 import subprocess
 import sys
-import tempfile
-import threading
-import time
 import zipfile
-from datetime import datetime
-from pathlib import Path
+import tempfile
 
-# ═══════════════════════════════════════════════════════════════
-#  CONSTANTES
-# ═══════════════════════════════════════════════════════════════
-VERSION      = "4.2.0" # Version améliorée
-SCRIPT_DIR   = os.path.dirname(os.path.realpath(__file__))
-BIN_DIR      = os.path.join(SCRIPT_DIR, "bin")
-PKG_INC_DIR  = os.path.join(SCRIPT_DIR, "packages", "include")
-PKG_LIB_DIR  = os.path.join(SCRIPT_DIR, "packages", "lib")
-BUILD_DIR    = os.path.join(SCRIPT_DIR, "build")
-HISTORY_FILE = os.path.expanduser("~/.chblutter_history")
-LOCK_FILE    = os.path.join(tempfile.gettempdir(), "chblutter.lock")
+from dartvm_fetch_build import DartLibInfo
 
-CMAKE_CMD    = "cmake"
-NINJA_CMD    = "ninja"
+CMAKE_CMD = "cmake"
+NINJA_CMD = "ninja"
 
-ARM_ARCH_DIRS       = ["arm64-v8a", "armeabi-v7a", "armeabi"]
-FLUTTER_LIB_NAMES   = ["libflutter.so", "Flutter", "libFlutter.so"]
-APP_LIB_KNOWN_NAMES = ["libapp.so", "App", "libApp.so"]
+SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
+BIN_DIR = os.path.join(SCRIPT_DIR, "bin")
+PKG_INC_DIR = os.path.join(SCRIPT_DIR, "packages", "include")
+PKG_LIB_DIR = os.path.join(SCRIPT_DIR, "packages", "lib")
+BUILD_DIR = os.path.join(SCRIPT_DIR, "build")
 
-DEBUG_MODE    = False
-SESSION_START = time.time()
-IS_TERMUX     = (
-    os.path.exists("/data/data/com.termux") or
-    "com.termux" in os.environ.get("PREFIX", "") or
-    "com.termux" in os.environ.get("HOME", "")
-)
-
-# ═══════════════════════════════════════════════════════════════
-#  ANSI COULEURS
-# ═══════════════════════════════════════════════════════════════
-def _supports_color() -> bool:
-    if os.environ.get("NO_COLOR"):
-        return False
-    return hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
-
-USE_COLOR = _supports_color()
-
-def _c(code: str) -> str:
-    return f"\033[{code}m" if USE_COLOR else ""
-
-class C:
-    R    = _c("0")
-    B    = _c("1")
-    DIM  = _c("2")
-    RED  = _c("31")
-    GRN  = _c("32")
-    YLW  = _c("33")
-    BLU  = _c("34")
-    MAG  = _c("35")
-    CYN  = _c("36")
-    WHT  = _c("37")
-    BRED = _c("91")
-    BGRN = _c("92")
-    BYLW = _c("93")
-    BCYN = _c("96")
-    BWHT = _c("97")
-
-def _strip_ansi(s: str) -> str:
-    return re.sub(r"\033\[[0-9;]*m", "", s)
-
-def _term_width() -> int:
-    return min(shutil.get_terminal_size((80, 24)).columns, 100)
-
-# ═══════════════════════════════════════════════════════════════
-#  LOGGER
-# ═══════════════════════════════════════════════════════════════
-def log_ok(msg: str):
-    print(f"  {C.BGRN}[+] {msg}{C.R}")
-
-def log_info(msg: str):
-    print(f"  {C.BCYN}[*] {msg}{C.R}")
-
-def log_warn(msg: str):
-    print(f"  {C.BYLW}[!] {msg}{C.R}", file=sys.stderr)
-
-def log_err(msg: str):
-    print(f"  {C.BRED}[-] {msg}{C.R}", file=sys.stderr)
-
-def log_dbg(msg: str):
-    if DEBUG_MODE:
-        print(f"  {C.DIM}[D] {msg}{C.R}")
-
-def log_section(title: str):
-    w = _term_width()
-    print(f"\n{C.DIM}{C.CYN}═{'═' * (w-2)}═{C.R}")
-    pad = max(0, (w - len(_strip_ansi(title)) - 4) // 2)
-    print(f"{C.BCYN}{' ' * pad}  {title}  {C.R}")
-    print(f"{C.DIM}{C.CYN}═{'═' * (w-2)}═{C.R}\n")
-
-# ═══════════════════════════════════════════════════════════════
-#  BANNIÈRE CYBERPUNK (Fixée)
-# ═══════════════════════════════════════════════════════════════
-def _clear():
-    os.system("cls" if os.name == "nt" else "clear")
-
-_LOGO = r"""
-  ██████╗ ██╗     ██╗   ██╗████████╗████████╗███████╗██████╗ 
-  ██╔══██╗██║     ██║   ██║╚══██╔══╝╚══██╔══╝██╔════╝██╔══██╗
-  ██████╔╝██║     ██║   ██║   ██║      ██║   █████╗  ██████╔╝
-  ██╔══██╗██║     ██║   ██║   ██║      ██║   ██╔══╝  ██╔══██╗
-  ██████╔╝███████╗╚██████╔╝   ██║      ██║   ███████╗██║  ██║
-  ╚═════╝ ╚══════╝ ╚═════╝    ╚═╝      ╚═╝   ╚══════╝╚═╝  ╚═╝
-"""
-
-def print_banner():
-    w = _term_width()
-    bar = f"{C.DIM}{C.GRN}{'─' * w}{C.R}"
-    print(bar)
-    for line in _LOGO.strip("\n").split("\n"):
-        print(f"{C.BGRN}{line}{C.R}")
-    
-    env = f"{C.MAG}Termux{C.R}" if IS_TERMUX else f"{C.BCYN}{platform.system()}{C.R}"
-    print()
-    print(f"  {C.BCYN}◈{C.R} {C.B}Flutter Reverse Engineering{C.R}  "
-          f"{C.DIM}v{VERSION}{C.R}  ·  {env}  ·  {C.DIM}{platform.machine()}{C.R}")
-    print(f"  {C.DIM}◈ Auto-Detection · Dart VM · ARM64/ARM32{C.R}")
-    print(bar + "\n")
-
-# ═══════════════════════════════════════════════════════════════
-#  SPINNER
-# ═══════════════════════════════════════════════════════════════
-class Spinner:
-    FRAMES = ["⠋","⠙","⠸","⠴","⠦","⠇","⠏"]
-    def __init__(self, label: str):
-        self.label   = label
-        self._stop   = threading.Event()
-        self._thread = threading.Thread(target=self._run, daemon=True)
-
-    def _run(self):
-        i = 0
-        while not self._stop.is_set():
-            f = self.FRAMES[i % len(self.FRAMES)]
-            print(f"\r  {C.BCYN}{f}{C.R}  {self.label}...", end="", flush=True)
-            time.sleep(0.07)
-            i += 1
-
-    def __enter__(self):
-        if sys.stdout.isatty(): self._thread.start()
-        return self
-
-    def __exit__(self, *_):
-        self._stop.set()
-        if self._thread.is_alive(): self._thread.join(timeout=0.5)
-        if sys.stdout.isatty(): print(f"\r{' ' * (len(self.label) + 14)}\r", end="", flush=True)
-
-def _acquire_lock():
-    try: Path(LOCK_FILE).write_text(str(os.getpid()))
-    except OSError: pass
-
-def _release_lock():
-    try:
-        if os.path.exists(LOCK_FILE): os.remove(LOCK_FILE)
-    except OSError: pass
-
-atexit.register(_release_lock)
-
-# ═══════════════════════════════════════════════════════════════
-#  DÉPENDANCES
-# ═══════════════════════════════════════════════════════════════
-def check_dependencies(silent: bool = False) -> bool:
-    # Réduction au minimum silencieux pour plus de vitesse
-    required = ["cmake", "ninja", "git"]
-    missing = [cmd for cmd in required if shutil.which(cmd) is None]
-    if missing and not silent:
-        log_err(f"Dépendances manquantes : {', '.join(missing)}")
-    return len(missing) == 0
-
-# ═══════════════════════════════════════════════════════════════
-#  RECHERCHE ET SÉLECTION DES LIBS (.so)
-# ═══════════════════════════════════════════════════════════════
-def _ask_user_for_so(options: list, title: str) -> str:
-    """Demande à l'utilisateur de choisir parmi une liste de fichiers .so."""
-    print(f"\n  {C.BYLW}[?] {title}{C.R}")
-    print(f"  {C.DIM}Plusieurs bibliothèques détectées. Le fichier AOT Dart (libapp) est souvent le plus volumineux.{C.R}")
-    
-    for i, (name, size) in enumerate(options):
-        size_mb = size / 1024 / 1024
-        color = C.BGRN if i == 0 else C.BCYN
-        print(f"  {C.DIM}[{i+1}]{C.R} {color}{name}{C.R} {C.DIM}({size_mb:.2f} MB){C.R}")
-    
-    while True:
-        try:
-            choice = input(f"\n  {C.BCYN}▸{C.R} Entrez le numéro (1-{len(options)}) : ").strip()
-            idx = int(choice) - 1
-            if 0 <= idx < len(options):
-                return options[idx][0]
-        except ValueError:
-            pass
-        print(f"  {C.RED}Choix invalide.{C.R}")
-
-def _find_flutter_lib(directory: str):
-    for name in FLUTTER_LIB_NAMES:
-        p = os.path.join(directory, name)
-        if os.path.isfile(p): return os.path.abspath(p)
-    return None
-
-def find_lib_files(indir: str):
-    """Recherche dans un dossier décompressé."""
-    flutter = _find_flutter_lib(indir)
-    
-    if not flutter:
-        for arch in ARM_ARCH_DIRS:
-            cand = os.path.join(indir, arch)
-            if os.path.isdir(cand):
-                flutter = _find_flutter_lib(cand)
-                if flutter:
-                    indir = cand
-                    break
-
-    if not flutter:
-        log_err("libflutter.so introuvable dans le répertoire.")
-        sys.exit(1)
-
-    # Trouver l'application
-    app = None
-    for name in APP_LIB_KNOWN_NAMES:
-        p = os.path.join(indir, name)
-        if os.path.isfile(p):
-            app = os.path.abspath(p)
-            break
-            
-    if not app:
-        # Chercher tous les autres .so
-        other_so = []
-        for f in os.listdir(indir):
-            if f.endswith(".so") and os.path.join(indir, f) != flutter:
-                size = os.path.getsize(os.path.join(indir, f))
-                other_so.append((f, size))
-        
-        if len(other_so) == 1:
-            app = os.path.abspath(os.path.join(indir, other_so[0][0]))
-            log_info(f"Auto-détection de l'app : {other_so[0][0]}")
-        elif len(other_so) > 1:
-            other_so.sort(key=lambda x: x[1], reverse=True) # Trier par taille décroissante
-            chosen = _ask_user_for_so(other_so, "Sélectionnez la bibliothèque AOT Dart (libapp) :")
-            app = os.path.abspath(os.path.join(indir, chosen))
-
-    if not app:
-        log_err("Aucune bibliothèque cible (libapp.so) trouvée.")
-        sys.exit(1)
-
-    return app, flutter
-
-def extract_libs_from_apk(apk_path: str, tmp_dir: str):
-    """Extrait flutter et libapp (ou demande de choisir) depuis un APK."""
-    flutter_lower = {n.lower() for n in FLUTTER_LIB_NAMES}
-    app_known_lower = {n.lower() for n in APP_LIB_KNOWN_NAMES}
-    
-    with zipfile.ZipFile(apk_path, "r") as zf:
-        names = zf.namelist()
-        
-        # 1. Chercher Flutter et déterminer l'architecture
-        target_arch = None
-        fl_info = None
-        for arch in ARM_ARCH_DIRS:
-            prefix = f"lib/{arch}/"
-            for fn in FLUTTER_LIB_NAMES:
-                if prefix + fn in names:
-                    fl_info = zf.getinfo(prefix + fn)
-                    target_arch = arch
-                    break
-            if target_arch: break
-            
-        if not fl_info:
-            log_err("libflutter.so introuvable dans l'APK.")
-            sys.exit(1)
-            
-        prefix = f"lib/{target_arch}/"
-        
-        # 2. Chercher libapp.so
-        app_info = None
-        for an in APP_LIB_KNOWN_NAMES:
-            if prefix + an in names:
-                app_info = zf.getinfo(prefix + an)
-                break
-                
-        # 3. Si libapp.so introuvable par nom, lister les autres .so
-        if not app_info:
-            other_so = []
-            for n in names:
-                if n.startswith(prefix) and n.endswith(".so") and os.path.basename(n).lower() not in flutter_lower:
-                    other_so.append((n, zf.getinfo(n).file_size))
-                    
-            if len(other_so) == 1:
-                app_info = zf.getinfo(other_so[0][0])
-                log_info(f"Auto-détection de l'app : {os.path.basename(app_info.filename)}")
-            elif len(other_so) > 1:
-                other_so.sort(key=lambda x: x[1], reverse=True)
-                choices = [(os.path.basename(n), s) for n, s in other_so]
-                chosen_base = _ask_user_for_so(choices, "Sélectionnez la bibliothèque AOT Dart de l'APK :")
-                for n, s in other_so:
-                    if os.path.basename(n) == chosen_base:
-                        app_info = zf.getinfo(n)
-                        break
-
-        if not app_info:
-            log_err("Impossible de trouver la cible AOT dans l'APK.")
-            sys.exit(1)
-
-        log_ok(f"Extraction depuis {target_arch}...")
-        zf.extract(app_info, tmp_dir)
-        zf.extract(fl_info,  tmp_dir)
-        return (
-            os.path.join(tmp_dir, app_info.filename),
-            os.path.join(tmp_dir, fl_info.filename)
-        )
-
-# ═══════════════════════════════════════════════════════════════
-#  DART INFO & CLASSES DE BASE
-# ═══════════════════════════════════════════════════════════════
-try:
-    from dartvm_fetch_build import DartLibInfo
-except ImportError:
-    class DartLibInfo:  # type: ignore
-        def __init__(self, version, os_name, arch, has_compressed_ptrs=None, snapshot_hash=None):
-            self.version, self.os_name, self.arch = version, os_name, arch
-            self.snapshot_hash = snapshot_hash
-            self.has_compressed_ptrs = has_compressed_ptrs if has_compressed_ptrs is not None else (os_name != "ios")
-            self.lib_name = f"dartvm{version}_{os_name}_{arch}"
 
 class BlutterInput:
-    def __init__(self, libapp_path, dart_info, outdir, rebuild, create_vs_sln, no_analysis, ida_fcn):
+    def __init__(
+        self,
+        libapp_path: str,
+        dart_info: DartLibInfo,
+        outdir: str,
+        rebuild_blutter: bool,
+        create_vs_sln: bool,
+        no_analysis: bool,
+        ida_fcn: bool,
+    ):
         self.libapp_path = libapp_path
-        self.dart_info   = dart_info
-        self.outdir      = outdir
-        self.rebuild     = rebuild
+        self.dart_info = dart_info
+        self.outdir = outdir
+        self.rebuild_blutter = rebuild_blutter
         self.create_vs_sln = create_vs_sln
-        self.ida_fcn     = ida_fcn
+        self.ida_fcn = ida_fcn
 
         vers = dart_info.version.split(".", 2)
         if int(vers[0]) == 2 and int(vers[1]) < 15:
+            if not no_analysis:
+                print('Dart version <2.15, force "no-analysis" option')
             no_analysis = True
         self.no_analysis = no_analysis
 
-        suffix = ""
-        if not dart_info.has_compressed_ptrs: suffix += "_no-compressed-ptrs"
-        if no_analysis: suffix += "_no-analysis"
-        if ida_fcn: suffix += "_ida-fcn"
+        # Note: null-safety is detected in blutter application, so no need another build of blutter for null-safety
+        self.name_suffix = ""
+        if not dart_info.has_compressed_ptrs:
+            self.name_suffix += "_no-compressed-ptrs"
+        if no_analysis:
+            self.name_suffix += "_no-analysis"
+        if ida_fcn:
+            self.name_suffix += "_ida-fcn"
+        # derive blutter executable filename
+        self.blutter_name = f"blutter_{dart_info.lib_name}{self.name_suffix}"
+        self.blutter_file = os.path.join(BIN_DIR, self.blutter_name) + (
+            ".exe" if os.name == "nt" else ""
+        )
 
-        self.name_suffix  = suffix
-        self.blutter_name = f"blutter_{dart_info.lib_name}{suffix}"
-        self.blutter_file = os.path.join(BIN_DIR, self.blutter_name) + (".exe" if os.name == "nt" else "")
 
-# (Les fonctions find_compat_macros, cmake_build, get_dart_lib_info, build_and_run sont standard)
-def find_compat_macros(dart_version: str, no_analysis: bool, ida_fcn: bool) -> list:
-    macros, vm_dir = [], os.path.join(PKG_INC_DIR, f"dartvm{dart_version}", "vm")
-    def _scan(filename: str, checks: list):
-        path = os.path.join(vm_dir, filename)
-        if not os.path.isfile(path): return
-        with open(path, "rb") as f:
-            mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
-            for needle, macro in checks:
-                if (mm.find(needle) != -1) if isinstance(needle, bytes) else needle(mm): macros.append(macro)
-            mm.close()
+def find_lib_files(indir: str):
+    app_file = os.path.join(indir, "libapp.so")
+    if not os.path.isfile(app_file):
+        app_file = os.path.join(indir, "App")
+        if not os.path.isfile(app_file):
+            sys.exit("Cannot find libapp file")
 
-    _scan("class_id.h", [
-        (b"V(LinkedHashMap)", "-DOLD_MAP_SET_NAME=1"),
-        (lambda mm: mm.find(b"V(LinkedHashMap)") != -1 and mm.find(b"V(ImmutableLinkedHashMap)") == -1, "-DOLD_MAP_NO_IMMUTABLE=1"),
-        (lambda mm: mm.find(b" kLastInternalOnlyCid ") == -1, "-DNO_LAST_INTERNAL_ONLY_CID=1"),
-        (b"V(TypeRef)", "-DHAS_TYPE_REF=1"),
-    ])
-    try:
-        if int(dart_version.split(".")[0]) >= 3: _scan("class_id.h", [(b"V(RecordType)", "-DHAS_RECORD_TYPE=1")])
-    except: pass
-    _scan("class_table.h", [(b"class SharedClassTable {", "-DHAS_SHARED_CLASS_TABLE=1")])
-    _scan("stub_code_list.h", [(lambda mm: mm.find(b"V(InitLateStaticField)") == -1, "-DNO_INIT_LATE_STATIC_FIELD=1")])
-    _scan("object_store.h", [(lambda mm: mm.find(b"build_generic_method_extractor_code)") == -1, "-DNO_METHOD_EXTRACTOR_STUB=1")])
-    _scan("object.h", [(lambda mm: mm.find(b"AsTruncatedInt64Value()") == -1, "-DUNIFORM_INTEGER_ACCESS=1")])
+    flutter_file = os.path.join(indir, "libflutter.so")
+    if not os.path.isfile(flutter_file):
+        flutter_file = os.path.join(indir, "Flutter")
+        if not os.path.isfile(flutter_file):
+            sys.exit("Cannot find libflutter file")
 
-    if no_analysis: macros.append("-DNO_CODE_ANALYSIS=1")
-    if ida_fcn: macros.append("-DIDA_FCN=1")
-    try:
-        if (int(dart_version.split(".")[0]), int(dart_version.split(".")[1])) >= (3, 5):
-            macros.append("-DOLD_MARKING_STACK_BLOCK=1")
-    except: pass
-    return list(set(macros))
+    return os.path.abspath(app_file), os.path.abspath(flutter_file)
 
-def cmake_build(inp: BlutterInput):
-    blutter_src = os.path.join(SCRIPT_DIR, "blutter")
-    build_dir   = os.path.join(BUILD_DIR, inp.blutter_name)
-    macros      = find_compat_macros(inp.dart_info.version, inp.no_analysis, inp.ida_fcn)
-    
-    log_info("CMake configure...")
-    subprocess.run([CMAKE_CMD, "-GNinja", "-B", build_dir, f"-DDARTLIB={inp.dart_info.lib_name}", f"-DNAME_SUFFIX={inp.name_suffix}", "-DCMAKE_BUILD_TYPE=Release", "--log-level=NOTICE"] + macros, cwd=blutter_src, capture_output=True, check=True)
-    log_info("Ninja build...")
-    subprocess.run([NINJA_CMD], cwd=build_dir, capture_output=True, check=True)
-    subprocess.run([CMAKE_CMD, "--install", "."], cwd=build_dir, capture_output=True, check=True)
 
-def get_dart_lib_info(libapp: str, libflutter: str):
+def extract_libs_from_apk(apk_file: str, out_dir: str):
+    with zipfile.ZipFile(apk_file, "r") as zf:
+        try:
+            app_info = zf.getinfo("lib/arm64-v8a/libapp.so")
+            flutter_info = zf.getinfo("lib/arm64-v8a/libflutter.so")
+        except:
+            sys.exit("Cannot find libapp.so or libflutter.so in the APK")
+
+        zf.extract(app_info, out_dir)
+        zf.extract(flutter_info, out_dir)
+
+        app_file = os.path.join(out_dir, app_info.filename)
+        flutter_file = os.path.join(out_dir, flutter_info.filename)
+        return app_file, flutter_file
+
+
+def find_compat_macro(dart_version: str, no_analysis: bool, ida_fcn: bool):
+    macros = []
+    include_path = os.path.join(PKG_INC_DIR, f"dartvm{dart_version}")
+    vm_path = os.path.join(include_path, "vm")
+    with open(os.path.join(vm_path, "class_id.h"), "rb") as f:
+        mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+        # Rename the default implementation classes of Map and Set https://github.com/dart-lang/sdk/commit/a2de36e708b8a8e15d3bd49eef2cede57e649436
+        if mm.find(b"V(LinkedHashMap)") != -1:
+            macros.append("-DOLD_MAP_SET_NAME=1")
+            # Add immutable maps and sets https://github.com/dart-lang/sdk/commit/e8e9e1d15216788d4112e40f4408c52455d11113
+            if mm.find(b"V(ImmutableLinkedHashMap)") == -1:
+                macros.append("-DOLD_MAP_NO_IMMUTABLE=1")
+        if mm.find(b" kLastInternalOnlyCid ") == -1:
+            macros.append("-DNO_LAST_INTERNAL_ONLY_CID=1")
+        # Remove TypeRef https://github.com/dart-lang/sdk/commit/2ee6fcf5148c34906c04c2ac518077c23891cd1b
+        # in this commit also added RecordType as sub class of AbstractType
+        #   so assume Dart Records implementation is completed in this commit (before this commit is inconplete RecordType)
+        if mm.find(b"V(TypeRef)") != -1:
+            macros.append("-DHAS_TYPE_REF=1")
+        # in main branch, RecordType is added in Dart 3.0 while TypeRef is removed in Dart 3.1
+        # in Dart 2.19, RecordType might be added to a source code but incomplete
+        if dart_version.startswith("3.") and mm.find(b"V(RecordType)") != -1:
+            macros.append("-DHAS_RECORD_TYPE=1")
+
+    with open(os.path.join(vm_path, "class_table.h"), "rb") as f:
+        mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+        # Clean up ClassTable (Merge ClassTable and SharedClassTable back together)
+        # https://github.com/dart-lang/sdk/commit/4a4eedd860a8af2b1cb27e68d9feae5550d0f511
+        # the commit moved GetUnboxedFieldsMapAt() from SharedClassTable to ClassTable
+        if mm.find(b"class SharedClassTable {") != -1:
+            macros.append("-DHAS_SHARED_CLASS_TABLE=1")
+
+    with open(os.path.join(vm_path, "stub_code_list.h"), "rb") as f:
+        mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+        # Add InitLateStaticField and InitLateFinalStaticField stub
+        # https://github.com/dart-lang/sdk/commit/37d45743e11970f0eacc0ec864e97891347185f5
+        if mm.find(b"V(InitLateStaticField)") == -1:
+            macros.append("-DNO_INIT_LATE_STATIC_FIELD=1")
+
+    with open(os.path.join(vm_path, "object_store.h"), "rb") as f:
+        mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+        # [vm] Simplify and optimize method extractors
+        # https://github.com/dart-lang/sdk/commit/b9b341f4a71b3ac8c9810eb24e318287798457ae#diff-545efb05c0f9e7191a855bca5e463f8f7f68079f74056f0040196c666b3bb8f0
+        if mm.find(b"build_generic_method_extractor_code)") == -1:
+            macros.append("-DNO_METHOD_EXTRACTOR_STUB=1")
+
+    with open(os.path.join(vm_path, "object.h"), "rb") as f:
+        mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+        # [vm] Refactor access to Integer value
+        # https://github.com/dart-lang/sdk/commit/84fd647969f0d74ab63f0994d95b5fc26cac006a
+        if mm.find(b"AsTruncatedInt64Value()") == -1:
+            macros.append("-DUNIFORM_INTEGER_ACCESS=1")
+
+    if no_analysis:
+        macros.append("-DNO_CODE_ANALYSIS=1")
+
+    if ida_fcn:
+        macros.append("-DIDA_FCN=1")
+
+    major, minor, *_ = dart_version.split(".")
+    if (int(major) > 3) or (int(major) == 3 and int(minor) >= 5):
+        # [vm] marking_stack_block_offset() changes since Dart Stable 3.5.0
+        # https://github.com/worawit/blutter/issues/96#issue-2470674670
+        macros.append("-DOLD_MARKING_STACK_BLOCK=1")
+
+    return macros
+
+
+def cmake_blutter(input: BlutterInput):
+    blutter_dir = os.path.join(SCRIPT_DIR, "blutter")
+    builddir = os.path.join(BUILD_DIR, input.blutter_name)
+
+    macros = find_compat_macro(
+        input.dart_info.version, input.no_analysis, input.ida_fcn
+    )
+
+    my_env = None
+    if platform.system() == "Darwin":
+        mac_ver = int(platform.mac_ver()[0].split(".", 1)[0])
+        if mac_ver < 15:
+            llvm_path = (
+                subprocess.run(
+                    ["brew", "--prefix", "llvm@16"], capture_output=True, check=True
+                )
+                .stdout.decode()
+                .strip()
+            )
+            clang_file = os.path.join(llvm_path, "bin", "clang")
+            my_env = {**os.environ, "CC": clang_file, "CXX": clang_file + "++"}
+    # cmake -GNinja -Bbuild -DCMAKE_BUILD_TYPE=Release
+    subprocess.run(
+        [
+            CMAKE_CMD,
+            "-GNinja",
+            "-B",
+            builddir,
+            f"-DDARTLIB={input.dart_info.lib_name}",
+            f"-DNAME_SUFFIX={input.name_suffix}",
+            "-DCMAKE_BUILD_TYPE=Release",
+            "--log-level=NOTICE",
+        ]
+        + macros,
+        cwd=blutter_dir,
+        check=True,
+        env=my_env,
+    )
+
+    # build and install blutter
+    subprocess.run([NINJA_CMD], cwd=builddir, check=True)
+    subprocess.run([CMAKE_CMD, "--install", "."], cwd=builddir, check=True)
+
+
+def get_dart_lib_info(libapp_path: str, libflutter_path: str) -> DartLibInfo:
+    # getting dart version
     from extract_dart_info import extract_dart_info
-    dart_version, snapshot_hash, flags, arch, os_name = extract_dart_info(libapp, libflutter)
-    print(f"  {C.BCYN}Dart Version{C.R} : {dart_version} ({os_name}_{arch})")
-    return DartLibInfo(dart_version, os_name, arch, "compressed-pointers" in flags, snapshot_hash)
 
-def build_and_run(inp: BlutterInput):
-    lib_ext = ".lib" if os.name == "nt" else ".a"
-    lib_prefix = "" if os.name == "nt" else "lib"
-    dart_lib = os.path.join(PKG_LIB_DIR, f"{lib_prefix}{inp.dart_info.lib_name}{lib_ext}")
+    dart_version, snapshot_hash, flags, arch, os_name = extract_dart_info(
+        libapp_path, libflutter_path
+    )
+    print(
+        f"Dart version: {dart_version}, Snapshot: {snapshot_hash}, Target: {os_name} {arch}"
+    )
+    print("flags: " + " ".join(flags))
 
-    if not os.path.isfile(dart_lib):
-        log_info("Téléchargement & compilation Dart VM lib...")
-        from dartvm_fetch_build import fetch_and_build
-        with Spinner("Build Dart VM"):
-            fetch_and_build(inp.dart_info)
-        inp.rebuild = True
+    has_compressed_ptrs = "compressed-pointers" in flags
+    return DartLibInfo(dart_version, os_name, arch, has_compressed_ptrs, snapshot_hash)
 
-    if not os.path.isfile(inp.blutter_file) or inp.rebuild:
-        with Spinner("Build Blutter Executable"):
-            cmake_build(inp)
 
-    os.makedirs(inp.outdir, exist_ok=True)
-    log_info("Analyse en cours...")
-    subprocess.run([inp.blutter_file, "-i", inp.libapp_path, "-o", inp.outdir], check=True)
-    log_ok(f"Terminé. Résultats dans : {inp.outdir}")
+def build_and_run(input: BlutterInput):
+    if not os.path.isfile(input.blutter_file) or input.rebuild_blutter:
+        # before fetch and build, check the existence of compiled library first
+        #   so the src and build directories can be deleted
+        if os.name == "nt":
+            dartlib_file = os.path.join(PKG_LIB_DIR, input.dart_info.lib_name + ".lib")
+        else:
+            dartlib_file = os.path.join(
+                PKG_LIB_DIR, "lib" + input.dart_info.lib_name + ".a"
+            )
+        if not os.path.isfile(dartlib_file):
+            from dartvm_fetch_build import fetch_and_build
 
-def run_with_flutter(libapp, libflutter, outdir, rebuild, vs_sln, no_analysis, ida_fcn):
-    dart_info = get_dart_lib_info(libapp, libflutter)
-    build_and_run(BlutterInput(libapp, dart_info, outdir, rebuild, vs_sln, no_analysis, ida_fcn))
+            fetch_and_build(input.dart_info)
 
-def run(indir, outdir, rebuild, vs_sln, no_analysis, ida_fcn):
-    if indir.lower().endswith(".apk"):
-        with tempfile.TemporaryDirectory() as tmp:
-            app, flutter = extract_libs_from_apk(indir, tmp)
-            run_with_flutter(app, flutter, outdir, rebuild, vs_sln, no_analysis, ida_fcn)
+        input.rebuild_blutter = True
+
+    # creating Visual Studio solution overrides building
+    if input.create_vs_sln:
+        macros = find_compat_macro(
+            input.dart_info.version, input.no_analysis, input.ida_fcn
+        )
+        blutter_dir = os.path.join(SCRIPT_DIR, "blutter")
+        dbg_output_path = os.path.abspath(os.path.join(input.outdir, "out"))
+        dbg_cmd_args = f"-i {input.libapp_path} -o {dbg_output_path}"
+        vscmd_ver = os.getenv("VSCMD_VER")
+        assert vscmd_ver is not None, (
+            "Need run blutter in Visual Studio Develeper console"
+        )
+        if vscmd_ver.startswith("18."):
+            generator = "Visual Studio 18 2026"
+        elif vscmd_ver.startswith("17."):
+            generator = "Visual Studio 17 2022"
+        else:
+            assert False, "Unknown Visual Studio version"
+        subprocess.run(
+            [
+                CMAKE_CMD,
+                "-G",
+                generator,
+                "-A",
+                "x64",
+                "-B",
+                input.outdir,
+                f"-DDARTLIB={input.dart_info.lib_name}",
+                f"-DNAME_SUFFIX={input.name_suffix}",
+                f"-DDBG_CMD:STRING={dbg_cmd_args}",
+            ]
+            + macros
+            + [blutter_dir],
+            check=True,
+        )
+        dbg_exe_dir = os.path.join(input.outdir, "Debug")
+        os.makedirs(dbg_exe_dir, exist_ok=True)
+        for filename in glob.glob(os.path.join(BIN_DIR, "*.dll")):
+            shutil.copy(filename, dbg_exe_dir)
     else:
-        app, flutter = find_lib_files(indir)
-        run_with_flutter(app, flutter, outdir, rebuild, vs_sln, no_analysis, ida_fcn)
+        if input.rebuild_blutter:
+            # do not use SDK path for checking source code because Blutter does not depended on it and SDK might be removed
+            cmake_blutter(input)
+            assert os.path.isfile(input.blutter_file), (
+                "Build complete but cannot find Blutter binary: " + input.blutter_file
+            )
 
-# ═══════════════════════════════════════════════════════════════
-#  TUI MINIMAL & RAPIDE
-# ═══════════════════════════════════════════════════════════════
-def _ask(prompt: str, default: str = "") -> str:
-    hint = f" {C.DIM}[{default}]{C.R}" if default else ""
-    val = input(f"  {C.BCYN}▸{C.R} {prompt}{hint} : ").strip()
-    return val if val else default
+        # execute blutter
+        subprocess.run(
+            [input.blutter_file, "-i", input.libapp_path, "-o", input.outdir],
+            check=True,
+        )
 
-def _browse(start: str = ".", ext_filter=None, title: str = "Naviguer"):
-    current = os.path.abspath(os.path.expanduser(start))
-    while True:
-        _clear()
-        print_banner()
-        log_section(title)
-        print(f"  {C.BCYN}Dossier actuel :{C.R} {current}\n")
-        
-        try: entries = sorted(os.scandir(current), key=lambda e: (not e.is_dir(), e.name.lower()))
-        except PermissionError: 
-            current = os.path.dirname(current)
-            continue
 
-        items = [("0", "..", None, True)]
-        print(f"  {C.DIM}0{C.R}  {C.BCYN}↑  ..  (Dossier parent){C.R}")
+def main_no_flutter(
+    libapp_path: str,
+    dart_version: str,
+    outdir: str,
+    rebuild_blutter: bool,
+    create_vs_sln: bool,
+    no_analysis: bool,
+    ida_fcn: bool,
+):
+    version, os_name, arch = dart_version.split("_")
+    dart_info = DartLibInfo(version, os_name, arch)
+    input = BlutterInput(
+        libapp_path,
+        dart_info,
+        outdir,
+        rebuild_blutter,
+        create_vs_sln,
+        no_analysis,
+        ida_fcn,
+    )
+    build_and_run(input)
 
-        idx = 1
-        for entry in entries:
-            is_dir = entry.is_dir()
-            if not is_dir and ext_filter and not any(entry.name.lower().endswith(ext) for ext in ext_filter):
-                continue
-            color = C.CYN if is_dir else C.GRN
-            print(f"  {C.DIM}{idx}{C.R}  {color}{entry.name}{'/' if is_dir else ''}{C.R}")
-            items.append((str(idx), entry.name, entry.path, is_dir))
-            idx += 1
 
-        print(f"\n  {C.DIM}[S: Sélectionner ce dossier · P: Chemin manuel · Q: Quitter]{C.R}")
-        choice = _ask("Choix").upper()
+def main2(
+    libapp_path: str,
+    libflutter_path: str,
+    outdir: str,
+    rebuild_blutter: bool,
+    create_vs_sln: bool,
+    no_analysis: bool,
+    ida_fcn: bool,
+):
+    dart_info = get_dart_lib_info(libapp_path, libflutter_path)
+    input = BlutterInput(
+        libapp_path,
+        dart_info,
+        outdir,
+        rebuild_blutter,
+        create_vs_sln,
+        no_analysis,
+        ida_fcn,
+    )
+    build_and_run(input)
 
-        if choice == "Q": sys.exit(0)
-        if choice == "S": return current
-        if choice == "P":
-            path = _ask("Chemin")
-            if os.path.exists(path): return os.path.abspath(path)
-            continue
 
-        match = next((it for it in items if it[0] == choice), None)
-        if match:
-            if match[1] == "..": current = os.path.dirname(current)
-            elif match[3]: current = match[2]
-            elif ext_filter: return match[2]
-
-def interactive_mode():
-    _acquire_lock()
-    _clear()
-    print_banner()
-
-    log_section("SÉLECTION DE LA CIBLE")
-    print(f"  {C.BCYN}1{C.R}  Analyser un fichier {C.BGRN}.APK{C.R}")
-    print(f"  {C.BCYN}2{C.R}  Analyser un {C.BCYN}dossier{C.R} (contenant les .so)")
-    print(f"  {C.BCYN}Q{C.R}  Quitter\n")
-
-    mode = _ask("Choix", "1").upper()
-    if mode == "Q": sys.exit(0)
-
-    home = os.path.expanduser("~")
-    indir = None
-    if mode == "1":
-        indir = _browse(start=home, ext_filter=[".apk"], title="SÉLECTIONNER L'APK")
+def main(
+    indir: str,
+    outdir: str,
+    rebuild_blutter: bool,
+    create_vs_sln: bool,
+    no_analysis: bool,
+    ida_fcn: bool,
+):
+    if indir.endswith(".apk"):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            libapp_file, libflutter_file = extract_libs_from_apk(indir, tmp_dir)
+            main2(
+                libapp_file,
+                libflutter_file,
+                outdir,
+                rebuild_blutter,
+                create_vs_sln,
+                no_analysis,
+                ida_fcn,
+            )
     else:
-        indir = _browse(start=home, title="SÉLECTIONNER LE DOSSIER")
+        libapp_file, libflutter_file = find_lib_files(indir)
 
-    # Calcul automatique du dossier de sortie
-    outdir = os.path.join(os.path.dirname(indir), "blutter_out")
-    
-    _clear()
-    print_banner()
-    log_section("RÉSUMÉ ET LANCEMENT")
-    print(f"  {C.BCYN}Cible  :{C.R} {indir}")
-    print(f"  {C.BCYN}Sortie :{C.R} {outdir}\n")
-    
-    # Lancement Automatique (comme l'original)
-    log_info("Démarrage automatique de l'analyse avec les paramètres standards...")
-    time.sleep(1)
-    
-    try:
-        run(indir, outdir, rebuild=False, vs_sln=False, no_analysis=False, ida_fcn=False)
-    except Exception as e:
-        log_err(f"Erreur fatale : {e}")
+        main2(
+            libapp_file,
+            libflutter_file,
+            outdir,
+            rebuild_blutter,
+            create_vs_sln,
+            no_analysis,
+            ida_fcn,
+        )
 
-# ═══════════════════════════════════════════════════════════════
-#  ENTRY POINT CLI
-# ═══════════════════════════════════════════════════════════════
+
+def run_command(command):
+    """Just a simple function to run commands in subprocess LOL"""
+    process = subprocess.Popen(
+        command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True
+    )
+    output, error = process.communicate()
+    if error:
+        return error.decode("utf-8")
+    else:
+        return output.decode("utf-8")
+
+
+def check_for_updates_and_pull():
+    # Fetch the latest data from the remote repository
+    run_command("git fetch")
+
+    # Check if the local branch is behind the remote one
+    try_pull = run_command("git pull")
+
+    if try_pull.__contains__("Already up to date."):
+        print(try_pull)
+    else:
+        # Reset the local branch to the state of the remote one
+        run_command("git reset --hard HEAD")
+
+        # Pull the changes from the remote repository
+        run_command("git pull")
+
+
 if __name__ == "__main__":
-    if len(sys.argv) == 1:
-        interactive_mode()
-        sys.exit(0)
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("indir",  nargs="?")
-    parser.add_argument("outdir", nargs="?")
-    parser.add_argument("--rebuild",       action="store_true")
-    parser.add_argument("--vs-sln",        action="store_true")
-    parser.add_argument("--no-analysis",   action="store_true")
-    parser.add_argument("--ida-fcn",       action="store_true")
-
+    parser = argparse.ArgumentParser(
+        prog="B(l)utter", description="Reversing a flutter application tool"
+    )
+    # TODO: accept ipa
+    parser.add_argument(
+        "indir",
+        help="An apk or a directory that contains both libapp.so and libflutter.so",
+    )
+    parser.add_argument("outdir", help="An output directory")
+    parser.add_argument(
+        "--rebuild",
+        action="store_true",
+        default=False,
+        help="Force rebuild the Blutter executable",
+    )
+    parser.add_argument(
+        "--vs-sln",
+        action="store_true",
+        default=False,
+        help="Generate Visual Studio solution at <outdir>",
+    )
+    parser.add_argument(
+        "--no-analysis",
+        action="store_true",
+        default=False,
+        help="Do not build with code analysis",
+    )
+    # rare usage scenario
+    parser.add_argument(
+        "--dart-version",
+        help='Run without libflutter (indir become libapp.so) by specify dart version such as "3.4.2_android_arm64"',
+    )
+    parser.add_argument(
+        "--nu",
+        action="store_false",
+        default=True,
+        help="Don't check for updates",
+    )
+    parser.add_argument(
+        "--ida-fcn",
+        action="store_true",
+        default=False,
+        help="Generate IDA function names script, Doesn't Generates Thread and Object Pool structs comments",
+    )
     args = parser.parse_args()
-    if not args.indir or not args.outdir:
-        parser.error("Indiquez la cible et le dossier de sortie.")
 
-    _acquire_lock()
-    print_banner()
-    run(args.indir, args.outdir, args.rebuild, args.vs_sln, args.no_analysis, args.ida_fcn)
+    if args.nu:
+        check_for_updates_and_pull()
+
+    if args.dart_version is None:
+        main(
+            args.indir,
+            args.outdir,
+            args.rebuild,
+            args.vs_sln,
+            args.no_analysis,
+            args.ida_fcn,
+        )
+    else:
+        main_no_flutter(
+            args.indir,
+            args.dart_version,
+            args.outdir,
+            args.rebuild,
+            args.vs_sln,
+            args.no_analysis,
+            args.ida_fcn,
+        )
