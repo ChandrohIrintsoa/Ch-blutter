@@ -1,4 +1,4 @@
-# blutter-termux — dépendances Python
+# Ch-blutter — dépendances Python
 # Installer avec : pip install -r requirements.txt
 #
 # Sur Termux :  pip install -r requirements.txt
@@ -7,8 +7,11 @@
 # Lecture des fichiers ELF (libapp.so, libflutter.so)
 pyelftools>=0.31
 
-# Téléchargement des sources Dart VM
+# Téléchargement des sources Dart VM et lookup réseau
 requests>=2.28.0
 
-# Optionnel — améliore les couleurs du terminal (non bloquant si absent)
-# colorama>=0.4.6
+# TUI enrichi (optionnel — fallback texte si absent)
+rich>=13.0.0
+
+# Désassemblage ARM64 pour extract_libflutter_functions (optionnel)
+capstone>=4.0.2

@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
+"""
+generate_thread_offsets_cpp.py — Génère les lignes C++ threadOffsetNames
+depuis runtime/vm/thread.h du SDK Dart.
 
+Usage :
+  python generate_thread_offsets_cpp.py runtime/vm/thread.h
+  python generate_thread_offsets_cpp.py runtime/vm/thread.h -o thread_offsets.cc
+"""
 
 from __future__ import annotations
 
@@ -8,22 +15,24 @@ import re
 import sys
 from pathlib import Path
 
-
 VERBOSE = os.environ.get("BLUTTER_VERBOSE", "0") == "1"
 
 # Patterns reconnus dans thread.h
 PATTERNS = [
     # OFFSET_OF(Thread, field_)
     re.compile(r'\bOFFSET_OF\s*\(\s*Thread\s*,\s*(\w+?)_\s*\)'),
+    # ThreadOffsetOf(field)
+    re.compile(r'\bThreadOffsetOf\s*\(\s*(\w+?)\s*\)'),
 ]
 
 
 def _strip_prefix(name: str) -> tuple[str, str]:
     """
     Retourne (method_name, display_name).
-    Ex : 'ffi_callback' → method='callback', display='ffi_callback'
-         'thread_id'    → method='id',        display='id'
-         'stack_limit'  → method='stack_limit', display='stack_limit'
+    Exemples :
+      'ffi_callback'  → method='callback',   display='ffi_callback'
+      'thread_id'     → method='id',          display='id'
+      'stack_limit'   → method='stack_limit', display='stack_limit'
     """
     if name.startswith("ffi_"):
         return name[4:], name
@@ -46,21 +55,23 @@ def extract_offset_names(header_file: str) -> list[tuple[str, str]]:
 
     content = Path(header_file).read_text(encoding="utf-8", errors="replace")
 
-    seen:   set[str]           = set()
-    result: list[tuple[str, str]] = []
+    seen:   set[tuple[str, str]]           = set()
+    result: list[tuple[str, str]]         = []
 
     for pattern in PATTERNS:
         for m in pattern.finditer(content):
             raw_name = m.group(1)
             method, display = _strip_prefix(raw_name)
-
             key = (method, display)
             if key not in seen:
                 seen.add(key)
                 result.append(key)
                 if VERBOSE:
-                    print(f"  [DBG] found offset: raw={raw_name!r} → method={method!r}, display={display!r}",
-                          file=sys.stderr)
+                    print(
+                        f"  [DBG] offset: raw={raw_name!r} "
+                        f"→ method={method!r}, display={display!r}",
+                        file=sys.stderr,
+                    )
 
     if not result:
         print(
@@ -73,12 +84,10 @@ def extract_offset_names(header_file: str) -> list[tuple[str, str]]:
 
 def generate_cpp_lines(entries: list[tuple[str, str]]) -> list[str]:
     """Génère les lignes C++ à partir des (method, display) extraits."""
-    lines = []
-    for method, display in entries:
-        lines.append(
-            f'threadOffsetNames[dart::Thread::{method}_offset()] = "{display}";'
-        )
-    return lines
+    return [
+        f'threadOffsetNames[dart::Thread::{method}_offset()] = "{display}";'
+        for method, display in entries
+    ]
 
 
 def main():
@@ -101,7 +110,7 @@ def main():
     try:
         entries = extract_offset_names(args.header_file)
         lines   = generate_cpp_lines(entries)
-        output  = "\n".join(lines) + "\n"
+        output  = "\n".join(lines) + ("\n" if lines else "")
 
         if args.output:
             Path(args.output).write_text(output, encoding="utf-8")
