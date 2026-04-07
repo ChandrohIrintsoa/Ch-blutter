@@ -1,17 +1,5 @@
 #!/usr/bin/env python3
-"""
-scripts/generate_thread_offsets_cpp.py
-───────────────────────────────────────
-Parse runtime/vm/thread.h et génère les lignes C++
-  threadOffsetNames[dart::Thread::X_offset()] = "X";
 
-Améliorations vs l'original :
-  - Vérification que le fichier existe avant de l'ouvrir
-  - Support de plusieurs patterns (pas seulement OFFSET_OF)
-  - Dédoublonnage des noms extraits
-  - Mode verbose
-  - CLI avec argparse
-"""
 
 from __future__ import annotations
 

@@ -1,20 +1,5 @@
 #!/usr/bin/env python3
-"""
-dartvm_fetch_build.py
-─────────────────────
-Clone le SDK Dart (sparse), patch pour Python 3.12+, génère la liste
-de sources, compile la lib statique Dart VM via CMake/Ninja.
 
-Améliorations vs l'original :
-  - DartLibInfo.from_string(str)  — parsing sûr du format "VER_OS_ARCH"
-  - Toutes les assert → exceptions avec message clair
-  - checkout_dart : cleanup atomique si clone incomplet
-  - cmake_dart : vérifie cmake/ninja avant de lancer
-  - fetch_and_build : crée les dossiers nécessaires au préalable
-  - Retry sur les opérations git réseau (fetch/clone)
-  - Support BLUTTER_VERBOSE pour le débogage
-  - Typage complet (Python 3.9+)
-"""
 
 from __future__ import annotations
 

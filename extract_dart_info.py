@@ -1,20 +1,5 @@
 #!/usr/bin/env python3
-"""
-extract_dart_info.py
-────────────────────
-Extrait les informations Dart (version, snapshot hash, flags, arch, OS)
-depuis libapp.so et libflutter.so.
 
-Améliorations vs l'original :
-  - Messages d'erreur précis avec contexte (offset, nom de symbole, etc.)
-  - Fallback si le hash est absent de .dynsym (cherche aussi dans .symtab)
-  - Support ARM32 (armeabi-v7a) en plus de ARM64
-  - Support iOS / Mach-O détecté proprement (erreur claire, pas assert)
-  - get_dart_sdk_url_size : retry sur erreur réseau
-  - get_dart_commit : validation complète du stream ZIP partiel
-  - Toutes les assert remplacées par des exceptions descriptives
-  - Mode verbose (BLUTTER_VERBOSE=1) pour le débogage
-"""
 
 from __future__ import annotations
 

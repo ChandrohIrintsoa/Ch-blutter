@@ -1,18 +1,5 @@
 #!/usr/bin/env python3
-"""
-scripts/extract_libflutter_functions.py
-────────────────────────────────────────
-Extrait les adresses des fonctions Dart C API internes de libflutter.so
-par disassemblage ARM64 ciblé.
 
-Améliorations vs l'original :
-  - Toutes les assert → exceptions avec contexte (adresse, instruction)
-  - Détection propre si capstone est absent
-  - Vérification préalable que .rodata, .rela.dyn, .text existent
-  - Support du mode verbose
-  - get_dart_version() extractible indépendamment
-  - CLI amélioré avec argparse
-"""
 
 from __future__ import annotations
 

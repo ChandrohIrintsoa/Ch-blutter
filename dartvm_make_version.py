@@ -1,18 +1,5 @@
 #!/usr/bin/env python3
-"""
-scripts/dartvm_make_version.py
-───────────────────────────────
-Génère runtime/vm/version.cc depuis version_in.cc en substituant les
-variables {{PLACEHOLDER}} avec les vraies valeurs Dart.
 
-Améliorations vs l'original :
-  - Tous les subprocess.run → check=True avec try/except et message clair
-  - Validation des fichiers d'entrée avant traitement
-  - Vérification que toutes les substitutions ont été effectuées
-  - Support du paramètre --sdk-dir en plus de l'argument positionnel
-  - Mode dry-run (--dry-run) pour vérifier sans écrire
-  - Variables manquantes : avertissement au lieu de crash silencieux
-"""
 
 from __future__ import annotations
 

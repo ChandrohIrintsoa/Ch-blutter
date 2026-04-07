@@ -1,16 +1,5 @@
 #!/usr/bin/env python3
-"""
-scripts/dartvm_create_srclist.py
-─────────────────────────────────
-Génère sourcelist.cmake à partir des fichiers .gni du SDK Dart.
 
-Améliorations vs l'original :
-  - Remplace les assert silencieux par des erreurs avec contexte
-  - Log des sources introuvables sans crash total
-  - Normalisation Windows des séparateurs de chemins
-  - Vérification de la présence de double-conversion
-  - Structure plus lisible et commentée
-"""
 
 from __future__ import annotations
 

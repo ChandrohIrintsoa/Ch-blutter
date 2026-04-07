@@ -1,17 +1,5 @@
 #!/usr/bin/env python3
-"""
-scripts/init_env_win.py
-────────────────────────
-Télécharge et installe ICU4C + Capstone pour compiler Blutter sous Windows.
 
-Améliorations vs l'original :
-  - Téléchargement avec barre de progression et retry
-  - Vérification de l'intégrité SHA-256 des archives téléchargées
-  - Gestion des timeouts réseau
-  - Skip du téléchargement si les DLLs sont déjà à jour
-  - Messages d'erreur précis
-  - Supporte proxy via les variables d'environnement HTTP_PROXY/HTTPS_PROXY
-"""
 
 from __future__ import annotations
 
